@@ -34,9 +34,7 @@ assert (
 # fmt: on
 
 
-def send_request(
-    dataset: str, request_entries: list[RequestEntry], dry_run: bool
-) -> None:
+def send_request(request_entries: list[RequestEntry], dry_run: bool) -> None:
     client = cdsapi.Client(wait_until_complete=False, delete=False)
 
     try:
@@ -52,10 +50,12 @@ def send_request(
             duplicate = False
         if not duplicate:
             if not dry_run:
-                result = client.retrieve(dataset, req_entry.request)
+                result = client.retrieve(req_entry.dataset, req_entry.request)
                 reply = result.reply
             else:
-                print(f"Would have sent request for {dataset}, {req_entry.request}")
+                print(
+                    f"Would have sent request for {req_entry.dataset}, {req_entry.request}"
+                )
                 # TODO: This causes issues when doing dry-run...
                 reply = {"state": "test_state", "request_id": "test_id"}
             r_df = request_to_df(req_entry.request, reply, req_hash)
