@@ -52,7 +52,7 @@ pressure_level = [
 time = ["00:00", "06:00", "12:00", "18:00"]
 ```
 The request should be a standard cdspi request, and it will be expanded according to `looping_variables` when run.
-This means that when run with the above in `example_spec.toml` e.g. `download_cds ./example_spec.toml`, one request will be sent for each combination of the entries is `variable` and `year` (9 requests/files in total).
+This means that when run with the above in `example_spec.toml` e.g. `download_cds download ./example_spec.toml`, one request will be sent for each combination of the entries is `variable` and `year` (9 requests/files in total).
 
 ## Installation
 The easiest way to install is to clone this repository, `cd cdsapi_helper` and
