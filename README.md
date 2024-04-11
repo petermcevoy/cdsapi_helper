@@ -17,7 +17,7 @@ Filenames are based on the parameters of the request, see `filename_spec` in the
 ```toml
 dataset = "reanalysis-era5-pressure-levels"
 looping_variables = ["variable", "year"]
-filename_spec = ["variable", "year", "time"]
+filename_spec = "{dataset}/{variable}-{year}"
 
 [request]
 product_type = "reanalysis"

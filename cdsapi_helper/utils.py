@@ -1,8 +1,29 @@
 import hashlib
 import os
+import sys
+import re
+from pathlib import Path
 from typing import Dict, List, Union
 
 import pandas as pd
+
+
+def format_bytes(size):
+    power = 2**10
+    n = 0
+    power_labels = {0: "B", 1: "KB", 2: "MB", 3: "GB", 4: "TB"}
+    while size > power:
+        size /= power
+        n += 1
+    return f"{size:.2f} {power_labels[n]}"
+
+
+def print_files_and_size(filepaths: List[Path]):
+    num_bytes = 0
+    for filepath in filepaths:
+        print(f"{filepath}", file=sys.stdout)
+        num_bytes += filepath.stat().st_size
+    print(f"Files amount to {format_bytes(num_bytes)}.", file=sys.stderr)
 
 
 def build_request(
@@ -87,15 +108,21 @@ def request_to_df(request: dict, reply: dict, req_hash: str) -> pd.DataFrame:
     return df
 
 
-def build_filename(request: dict, filename_spec: list) -> str:
-    filetype = ".nc" if request.data_format == "netcdf" else ".grib"
-    filename_parts = []
-    for var in filename_spec:
-        part = str_to_list(getattr(request, var))
-        part = "_".join(part)
-        filename_parts.append(part)
+RE_FILENAMESPEC = re.compile(r"\{(\w+)\}")
 
-    filename = "-".join(filename_parts) + filetype
+
+def build_filename(dataset: str, request: dict, filename_spec: str) -> str:
+    flattened_request = dict(request)
+    flattened_request["dataset"] = dataset
+
+    def replace_filespec(match):
+        tag = match.group(1)
+        return flattened_request[tag]
+
+    filetype = ".nc" if request["format"] == "netcdf" else ".grib"
+
+    filename = RE_FILENAMESPEC.sub(replace_filespec, filename_spec)
+    filename += filetype
     filename = os.path.join(os.path.curdir, filename)
     return filename
 
@@ -122,3 +149,13 @@ def get_json_sem_hash(data: JsonTree, hasher=hashlib.sha256) -> str:
 
 def str_to_list(string: str) -> list:
     return string.strip("[]").replace("'", "").replace(" ", "").split(",")
+
+
+def resolve_and_get_local_cache(cache_dir: Path):
+    cache_dir.mkdir(exist_ok=True)
+
+    local_cache_entries = {f: cache_dir / f for f in os.listdir(cache_dir)}
+
+    # TODO: Consider having a list of ready-only cache_dirs that we can symlink or copy from.
+
+    return local_cache_entries
