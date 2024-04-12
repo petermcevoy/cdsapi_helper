@@ -113,7 +113,7 @@ def download_request(
         results = p.map(download_helper_p, df.itertuples())
 
     # Write new states.
-    df.state = results
+    df['state'] = results
     # Save them.
     df.to_csv("./cds_requests.csv")
 
