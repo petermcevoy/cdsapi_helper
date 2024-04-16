@@ -130,6 +130,11 @@ def download_helper(
             result.update()
             filename = output_folder / request.request_hash
             if not dry_run:
+                # Remove file to be downloaded if it exists, as to not to risk cdsapi resuming a
+                # corrupt file
+                if filename.exists():
+                    filename.unlink()
+
                 result.download(filename)
                 return "downloaded"
             else:
