@@ -236,6 +236,10 @@ def download(
 ) -> None:
     cache_dir = ctx.obj["cache_dir"]
 
+    # check that cache_dir and output_dir and in the same sub path
+    if output_dir.parent != cache_dir.parent:
+        raise ValueError('cache_dir and output_dir need to have the same parent directory')
+
     request_entries = generate_request_entries_from_specs(spec_paths)
     click.echo(f"{len(request_entries)} request(s) generated in total.", err=True)
 
@@ -327,7 +331,8 @@ def download(
         if output_file.exists():
             os.remove(output_file)
 
-        os.symlink(cache_file.absolute(), output_file)
+        relative_path_to_cache_entry = os.path.relpath(cache_file, output_file.parent)
+        os.symlink(relative_path_to_cache_entry, output_file)
         num_links += 1
 
     click.echo(f"Created {num_links} symlinks.", err=True)
