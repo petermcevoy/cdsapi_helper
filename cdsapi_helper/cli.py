@@ -255,13 +255,14 @@ def download(
     send_request(remaining_requests, dry_run)
 
     # Check or wait for remaining_requests
+    wait_retries = 0
     check_request_again = True
     while check_request_again:
         # First we try to download, likely in queue.
         download_request(cache_dir, n_jobs=n_jobs, dry_run=dry_run)
         # Then we update the request.
         update_request(dry_run)
-        # How should we wait?
+
         if wait:
             try:
                 df = pd.read_csv("./cds_requests.csv", index_col=0, dtype=str)
@@ -271,6 +272,7 @@ def download(
             # Anything in the queue ready for download?
             if (df.state == "completed").any():
                 # Should go back up to download_request.
+                wait_retries = 0
                 continue
             # Everything is in the queue.
             elif (
@@ -278,9 +280,15 @@ def download(
                 or (df.state == "running").any()
                 or (df.state == "accepted").any()
             ):
-                # Wait 30 minutes before checking the status again.
-                click.echo("Requests are running, waiting 30 min.")
-                sleep(60 * 30)
+
+                # Wait before checking the status again.
+                wait_minutes = min(30.0,(5 + (3.5 ** wait_retries)) / 60)
+                click.echo(f"Requests are running, waiting {wait_minutes:0.2f} min.")
+                sleep(60 * wait_minutes)
+
+                if wait_retries < 6:
+                    wait_retries += 1
+
             else:
                 check_request_again = False
         else:
