@@ -290,7 +290,7 @@ def download(
     for req_entry in request_entries:
         cache_file = cache_dir / req_entry.get_sha256()
         if not cache_file.exists():
-            click.echo(f"All requests are not downloaded. Exiting.", err=True)
+            click.echo(f"All requests are not downloaded. Try again when data is ready or use `--wait` flag to wait for requests to be ready.", err=True)
             click.echo(
                 click.style(
                     f"Missing expected cache file {cache_file} for request {req_entry.request}",
