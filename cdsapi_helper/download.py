@@ -93,6 +93,9 @@ def update_request(dry_run: bool) -> None:
                 print(err)
                 df.at[request.Index, "state"] = "deleted"
 
+        if request.state == "deleted" or df.at[request.Index, "state"] == "deleted":
+            df.drop(request.Index, inplace=True)
+
     df.to_csv("./cds_requests.csv")
 
 
@@ -142,7 +145,9 @@ def download_helper(
         except HTTPError as e:
             print("Request not found")
             print(e)
-            return request.state
+            print(f'request.state: {request.state}')
+            # The request should be deleted
+            return "deleted"
     else:
         # No change to state.
         return request.state
