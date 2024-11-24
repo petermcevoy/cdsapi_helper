@@ -35,8 +35,6 @@ assert (
 
 
 def send_request(request_entries: list[RequestEntry], dry_run: bool) -> None:
-    client = cdsapi.Client(wait_until_complete=False, delete=False)
-
     try:
         df = pd.read_csv("./cds_requests.csv", index_col=0, dtype=str)
     except FileNotFoundError:
@@ -50,6 +48,7 @@ def send_request(request_entries: list[RequestEntry], dry_run: bool) -> None:
             duplicate = False
         if not duplicate:
             if not dry_run:
+                client = _get_cds_client_cached()
                 result = client.retrieve(req_entry.dataset, req_entry.request)
                 reply = result.reply
             else:
@@ -69,7 +68,6 @@ def send_request(request_entries: list[RequestEntry], dry_run: bool) -> None:
 
 
 def update_request(dry_run: bool) -> None:
-    client = cdsapi.Client(timeout=600, wait_until_complete=False, delete=False)
     try:
         df = pd.read_csv("./cds_requests.csv", index_col=0, dtype=str)
     except FileNotFoundError:
@@ -85,6 +83,7 @@ def update_request(dry_run: bool) -> None:
         ):
             try:
                 if not dry_run:
+                    client = _get_cds_client_cached()
                     result = client.client.get_remote(request.request_id)
                     result.update()
                     df.at[request.Index, "state"] = result.reply["state"]
@@ -106,11 +105,10 @@ def download_request(
         df = pd.read_csv("./cds_requests.csv", index_col=0, dtype=str)
     except FileNotFoundError:
         return
-    client = cdsapi.Client(timeout=600, wait_until_complete=False, delete=False)
     print("Downloading completed requests...")
     # Some parallel downloads.
     download_helper_p = partial(
-        download_helper, output_folder=output_folder, client=client, dry_run=dry_run
+        download_helper, output_folder=output_folder, dry_run=dry_run
     )
     with ThreadPool(processes=n_jobs) as p:
         results = p.map(download_helper_p, df.itertuples())
@@ -121,14 +119,27 @@ def download_request(
     df.to_csv("./cds_requests.csv")
 
 
+
+CDS_CLIENT = None
+
+def _get_cds_client_cached():
+    """Get the CDS client, will create a new one if it doesn't exist"""
+    global CDS_CLIENT
+
+    if CDS_CLIENT is not None:
+        return CDS_CLIENT
+
+    CDS_CLIENT = cdsapi.Client(timeout=600, wait_until_complete=False, delete=False)
+    return CDS_CLIENT
+
 def download_helper(
     request: pd.core.frame.pandas,
     output_folder: Path,
-    client: cdsapi.Client,
     dry_run: bool = False,
 ) -> str:
     if request.state == "completed":
         try:
+            client = _get_cds_client_cached()
             result = client.client.get_remote(request.request_id)
             result.update()
             filename = output_folder / request.request_hash
