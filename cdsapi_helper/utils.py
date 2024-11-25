@@ -119,7 +119,7 @@ def build_filename(dataset: str, request: dict, filename_spec: str) -> str:
         tag = match.group(1)
         return flattened_request[tag]
 
-    filetype = ".nc" if request["format"] == "netcdf" else ".grib"
+    filetype = ".nc" if request["format"] in ["netcdf", "netcdf_legacy"] else ".grib"
 
     filename = RE_FILENAMESPEC.sub(replace_filespec, filename_spec)
     filename += filetype
