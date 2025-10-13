@@ -7,6 +7,7 @@ from pathlib import Path
 from time import sleep
 from typing import List, Optional
 import datetime
+import string
 
 import cdsapi
 import click
@@ -72,29 +73,34 @@ def download_era5(variable: str, year: str, month: str, dry_run: bool) -> None:
 def generate_request_entries_from_specs(spec_paths):
     request_entries = []
     for spec_path in spec_paths:
-        num_request_for_spec = 0
         with open(spec_path, mode="rb") as fp:
             spec = tomli.load(fp)
 
         dataset = spec["dataset"]
         request = spec["request"]
-        to_permutate = [request[var] for var in spec["looping_variables"]]
-        for perm_spec in product(*to_permutate):
-            perm_spec = {
-                spec["looping_variables"][i]: perm_spec[i]
-                for i in range(len(spec["looping_variables"]))
-            }
+
+        assert isinstance(spec["filename_spec"], str), "Field 'filename_spec' in TOML must be a string."
+        looping_variables: set[str] = {
+            field_name for _, field_name, _, _ in string.Formatter().parse(spec["filename_spec"])
+        }
+        assert all(var in request for var in looping_variables), (
+            f"The variables {looping_variables - request.keys()} are "
+            "missing in the request but required from 'filename_spec'."
+        )
+        request_list = []
+        for permutation_values in product(
+            *[request[var_name] for var_name in looping_variables]
+        ):
             sub_request = deepcopy(request)
-            for key, value in perm_spec.items():
-                sub_request[key] = value
-            request_entries.append(
-                RequestEntry(
-                    dataset=dataset,
-                    request=sub_request,
-                    filename_spec=spec["filename_spec"],
-                )
-            )
-            num_request_for_spec += 1
+            # change the values according to the current permutation
+            for var_name, var_value in zip(looping_variables, permutation_values):
+                sub_request[var_name] = var_value
+
+            request_entries.append(RequestEntry(
+                dataset=dataset,
+                request=sub_request,
+                filename_spec=spec["filename_spec"],
+            ))
 
     # Remove requests with invalid dates
     def has_valid_date(req: RequestEntry):
@@ -258,6 +264,8 @@ def download(
 
     send_request(remaining_requests, dry_run)
 
+    if not wait:
+        exit()
     # Check or wait for remaining_requests
     wait_retries = 0
     check_request_again = True
@@ -267,34 +275,30 @@ def download(
         # Then we update the request.
         update_request(dry_run)
 
-        if wait:
-            try:
-                df = pd.read_csv("./cds_requests.csv", index_col=0, dtype=str)
-            # This shouldn't happen at this point.
-            except FileNotFoundError:
-                print("This shouldn't happen.")
-            # Anything in the queue ready for download?
-            if (df.state == "completed").any():
-                # Should go back up to download_request.
-                wait_retries = 0
-                continue
-            # Everything is in the queue.
-            elif (
-                (df.state == "queued").any()
-                or (df.state == "running").any()
-                or (df.state == "accepted").any()
-            ):
+        try:
+            df = pd.read_csv("./cds_requests.csv", index_col=0, dtype=str)
+        # This shouldn't happen at this point.
+        except FileNotFoundError:
+            print("This shouldn't happen.")
+        # Anything in the queue ready for download?
+        if (df.state == "completed").any():
+            # Should go back up to download_request.
+            wait_retries = 0
+            continue
+        # Everything is in the queue.
+        elif (
+            (df.state == "queued").any()
+            or (df.state == "running").any()
+            or (df.state == "accepted").any()
+        ):
 
-                # Wait before checking the status again.
-                wait_minutes = min(30.0,(5 + (3.5 ** wait_retries)) / 60)
-                click.echo(f"Requests are running, waiting {wait_minutes:0.2f} min.")
-                sleep(60 * wait_minutes)
+            # Wait before checking the status again.
+            wait_minutes = min(30.0,(5 + (3.5 ** wait_retries)) / 60)
+            click.echo(f"Requests are running, waiting {wait_minutes:0.2f} min.")
+            sleep(60 * wait_minutes)
 
-                if wait_retries < 6:
-                    wait_retries += 1
-
-            else:
-                check_request_again = False
+            if wait_retries < 6:
+                wait_retries += 1
         else:
             check_request_again = False
 
