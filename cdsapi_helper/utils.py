@@ -280,23 +280,26 @@ StrTree = Dict[str, StrTreeType]
 
 
 def sorted_dict_str(data: JsonType) -> StrTreeType:
-    if type(data) == dict:
+    if isinstance(data, dict):
         return {k: sorted_dict_str(data[k]) for k in sorted(data.keys())}
-    elif type(data) == list:
+    elif isinstance(data, list):
         return [sorted_dict_str(val) for val in data]
     else:
         return str(data)
 
 
-def get_json_sem_hash(data: JsonTree, hasher=hashlib.sha256) -> str:
+def get_json_sem_hash(data: JsonTree, hasher: hashlib.HASH=hashlib.sha256) -> str:
+    """Get SHA26 hash of json."""
     return hasher(bytes(repr(sorted_dict_str(data)), "UTF-8")).hexdigest()
 
 
 def str_to_list(string: str) -> list:
+    """Convert string to list (assume str is valid)."""
     return string.strip("[]").replace("'", "").replace(" ", "").split(",")
 
 
-def resolve_and_get_local_cache(cache_dir: Path):
+def resolve_and_get_local_cache(cache_dir: Path) -> dict[str,Path]:
+    """Get existing entries in local cache."""
     cache_dir.mkdir(exist_ok=True)
 
     local_cache_entries = {f: cache_dir / f for f in os.listdir(cache_dir)}
