@@ -26,6 +26,7 @@ from .utils import (
     print_files_and_size,
     format_bytes,
     format_and_validate_request,
+    build_filename,
     REQUEST_DATABASE_FILE,
 )
 
