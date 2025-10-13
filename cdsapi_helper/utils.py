@@ -45,9 +45,11 @@ def build_filename(dataset: str, request: dict, filename_spec: str) -> str:
 
     def replace_filespec(match):
         tag = match.group(1)
+        if tag == 'area':
+            return str(Area(flattened_request[tag]))
         return flattened_request[tag]
 
-    filetype = ".nc" if request["format"] in ["netcdf", "netcdf_legacy"] else ".grib"
+    filetype = ".nc" if request["data_format"] in ["netcdf", "netcdf_legacy"] else ".grib"
 
     filename = RE_FILENAMESPEC.sub(replace_filespec, filename_spec)
     filename += filetype
@@ -102,7 +104,7 @@ class Area:
     @property
     def extent(self) -> list[float|int]:
         """Extend of the region (lon_min, lon_max, lat_min, lat_max)."""
-        return self.lon + self.lat
+        return [self.lat[0], self.lon[0], self.lat[1], self.lon[1]]
 
     @staticmethod
     def lat2str(lat: float) -> str:
@@ -181,7 +183,6 @@ def format_and_validate_request(
         'day',
         'time',
         'pressure_level',
-        'format',
         'data_format',
         'download_format',
         'product_type',
