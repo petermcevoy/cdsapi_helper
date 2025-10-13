@@ -216,7 +216,7 @@ def list_files(
     "wait",
     is_flag=True,
     type=click.BOOL,
-    help="Keep running, waiting for requests to be processed.",
+    help="Waiting for requests to be processed then download them.",
 )
 @click.option(
     "--output-dir",
