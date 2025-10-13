@@ -7,6 +7,7 @@ from typing import Dict, List, Union
 
 import pandas as pd
 
+REQUEST_DATABASE_FILE = Path("./cds_requests.csv")
 
 def format_bytes(size):
     power = 2**10

@@ -27,6 +27,7 @@ from .utils import (
     resolve_and_get_local_cache,
     print_files_and_size,
     format_bytes,
+    REQUEST_DATABASE_FILE,
 )
 
 
@@ -275,11 +276,8 @@ def download(
         # Then we update the request.
         update_request(dry_run)
 
-        try:
-            df = pd.read_csv("./cds_requests.csv", index_col=0, dtype=str)
-        # This shouldn't happen at this point.
-        except FileNotFoundError:
-            print("This shouldn't happen.")
+        assert REQUEST_DATABASE_FILE.exists(), f"Request store in file '{REQUEST_DATABASE_FILE}' does not exist."
+        df = pd.read_csv(REQUEST_DATABASE_FILE, index_col=0, dtype=str)
         # Anything in the queue ready for download?
         if (df.state == "completed").any():
             # Should go back up to download_request.
