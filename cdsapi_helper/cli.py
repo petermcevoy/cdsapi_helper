@@ -22,10 +22,10 @@ from .download import (
     RequestEntry,
 )
 from .utils import (
-    build_request,
     resolve_and_get_local_cache,
     print_files_and_size,
     format_bytes,
+    format_and_validate_request,
     REQUEST_DATABASE_FILE,
 )
 
@@ -37,7 +37,7 @@ def generate_request_entries_from_specs(spec_paths):
             spec = tomli.load(fp)
 
         dataset = spec["dataset"]
-        request = spec["request"]
+        request = format_and_validate_request(spec["request"])
 
         assert isinstance(spec["filename_spec"], str), "Field 'filename_spec' in TOML must be a string."
         looping_variables: set[str] = {
