@@ -5,18 +5,16 @@ from copy import deepcopy
 from itertools import product
 from pathlib import Path
 from time import sleep
-from typing import List, Optional
+from typing import List
 import datetime
 import string
 
-import cdsapi
 import click
 import pandas as pd
 import tomli
 
 from .download import (
     download_request,
-    get_json_sem_hash,
     send_request,
     update_request,
     RequestEntry,
@@ -54,7 +52,7 @@ def generate_request_entries_from_specs(spec_paths):
         ):
             sub_request = deepcopy(request)
             # change the values according to the current permutation
-            for var_name, var_value in zip(looping_variables, permutation_values):
+            for var_name, var_value in zip(looping_variables, permutation_values, strict=True):
                 sub_request[var_name] = var_value
 
             request_entries.append(RequestEntry(
@@ -264,7 +262,7 @@ def download(
     for req_entry in request_entries:
         cache_file = cache_dir / req_entry.get_sha256()
         if not cache_file.exists():
-            click.echo(f"All requests are not downloaded. Try again when data is ready or use `--wait` flag to wait for requests to be ready.", err=True)
+            click.echo("All requests are not downloaded. Try again when data is ready or use `--wait` flag to wait for requests to be ready.", err=True)
             click.echo(
                 click.style(
                     f"Missing expected cache file {cache_file} for request {req_entry.request}",
@@ -312,4 +310,4 @@ def download(
             f"There are {len(dangling_cache_files)} ({format_bytes(dangling_bytes)}) dangling cache files not accounted for by input spec files.",
             err=True,
         )
-        click.echo(f"Use `list-dangling` subcommand to display these files.", err=True)
+        click.echo("Use `list-dangling` subcommand to display these files.", err=True)

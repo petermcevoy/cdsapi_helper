@@ -1,7 +1,6 @@
 from functools import partial
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
-from typing import Union
 
 import cdsapi
 import pandas as pd
