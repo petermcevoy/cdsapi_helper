@@ -7,7 +7,7 @@ import cdsapi
 import pandas as pd
 from requests.exceptions import HTTPError
 
-from .utils import get_json_sem_hash, request_to_df
+from .utils import get_json_sem_hash, request_to_df, REQUEST_DATABASE_FILE
 
 
 class RequestEntry:
@@ -35,9 +35,9 @@ assert (
 
 
 def send_request(request_entries: list[RequestEntry], dry_run: bool) -> None:
-    try:
-        df = pd.read_csv("./cds_requests.csv", index_col=0, dtype=str)
-    except FileNotFoundError:
+    if REQUEST_DATABASE_FILE.exists():
+        df = pd.read_csv(REQUEST_DATABASE_FILE, index_col=0, dtype=str)
+    else:
         df = pd.DataFrame()
 
     for req_entry in request_entries:
@@ -64,15 +64,15 @@ def send_request(request_entries: list[RequestEntry], dry_run: bool) -> None:
 
     # Save it.
     df = df.reset_index(drop=True)
-    df.to_csv("./cds_requests.csv")
+    df.to_csv(REQUEST_DATABASE_FILE)
 
 
 def update_request(dry_run: bool) -> None:
-    try:
-        df = pd.read_csv("./cds_requests.csv", index_col=0, dtype=str)
-    except FileNotFoundError:
+    if not REQUEST_DATABASE_FILE.exists():
         print("Nothing to update.")
         return
+    df = pd.read_csv(REQUEST_DATABASE_FILE, index_col=0, dtype=str)
+
 
     print("Updating requests...")
     for request in df.itertuples():
@@ -95,16 +95,15 @@ def update_request(dry_run: bool) -> None:
         if request.state == "deleted" or df.at[request.Index, "state"] == "deleted":
             df.drop(request.Index, inplace=True)
 
-    df.to_csv("./cds_requests.csv")
+    df.to_csv(REQUEST_DATABASE_FILE)
 
 
 def download_request(
     output_folder: Path, n_jobs: int = 5, dry_run: bool = False
 ) -> None:
-    try:
-        df = pd.read_csv("./cds_requests.csv", index_col=0, dtype=str)
-    except FileNotFoundError:
+    if not REQUEST_DATABASE_FILE.exists():
         return
+    df = pd.read_csv(REQUEST_DATABASE_FILE, index_col=0, dtype=str)
     print("Downloading completed requests...")
     # Some parallel downloads.
     download_helper_p = partial(
@@ -116,7 +115,7 @@ def download_request(
     # Write new states.
     df['state'] = results
     # Save them.
-    df.to_csv("./cds_requests.csv")
+    df.to_csv(REQUEST_DATABASE_FILE)
 
 
 
