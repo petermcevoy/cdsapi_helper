@@ -15,9 +15,7 @@ import pandas as pd
 import tomli
 
 from .download import (
-    download_request,
-    send_request,
-    update_request,
+    process_requests,
     RequestEntry,
 )
 from .utils import (
@@ -171,13 +169,6 @@ def list_files(
     help="Dry run: no download and no symlinks.",
 )
 @click.option(
-    "--n-jobs",
-    "n_jobs",
-    show_default=True,
-    default=5,
-    type=click.INT,
-)
-@click.option(
     "--output-dir",
     "output_dir",
     show_default=True,
@@ -188,7 +179,6 @@ def list_files(
 def download(
     ctx,
     spec_paths: List[str],
-    n_jobs: int,
     dry_run: bool,
     output_dir: Path,
 ) -> None:
@@ -214,38 +204,7 @@ def download(
     )
     click.echo(f"{len(remaining_requests)} local cache misses", err=True)
 
-    send_request(remaining_requests, dry_run)
-
-    # Check or wait for remaining_requests
-    wait_retries = 0
-    while True:
-        # First we try to download, likely in queue.
-        download_request(cache_dir, n_jobs=n_jobs, dry_run=dry_run)
-        # Then we update the request.
-        update_request(dry_run)
-
-        assert REQUEST_DATABASE_FILE.exists(), f"Request store in file '{REQUEST_DATABASE_FILE}' does not exist."
-        df = pd.read_csv(REQUEST_DATABASE_FILE, index_col=0, dtype=str)
-        # Anything in the queue ready for download?
-        if (df.state == "completed").any():
-            # Should go back up to download_request.
-            wait_retries = 0
-            continue
-        # Everything is in the queue.
-        elif (
-            (df.state == "queued").any()
-            or (df.state == "running").any()
-            or (df.state == "accepted").any()
-        ):
-            # Wait before checking the status again.
-            wait_minutes = min(30.0,(5 + (3.5 ** wait_retries)) / 60)
-            click.echo(f"Requests are running, waiting {wait_minutes:0.2f} min.")
-            sleep(60 * wait_minutes)
-
-            if wait_retries < 6:
-                wait_retries += 1
-        else:
-            break
+    process_requests(remaining_requests, cache_dir, dry_run)
 
     # Check that all requests are downloaded.
     for req_entry in request_entries:

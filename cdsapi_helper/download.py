@@ -1,6 +1,8 @@
 from functools import partial
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
+from queue import Queue
+from time import sleep
 
 import cdsapi
 import pandas as pd
@@ -8,6 +10,7 @@ from requests.exceptions import HTTPError
 
 from .utils import get_json_sem_hash, request_to_df, REQUEST_DATABASE_FILE
 
+MAX_ACTIVE_REQUESTS = 128
 
 class RequestEntry:
     def __init__(self, dataset, request, filename_spec):
@@ -32,95 +35,95 @@ assert (
 ), "RequestEntry.get_sha256() did not produce the expected hash!"
 # fmt: on
 
+def wait_and_download_requests(df: pd.DataFrame, cache_dir: Path, wait_for_all: bool) -> pd.DataFrame:
+    if df.size == 0:
+        return df
+    wait_time_min = 1
+    while True:
+        df = update_request_state(df)
+        # Anything in the queue ready for download?
+        if (df.state == "completed").any():
+            df = download_completed_requests(df, cache_dir)
+            wait_time_min = 1
+            if not wait_for_all:
+                break
+        elif df.state.isin({"queued", "running", "accepted"}).any():
+            # Wait a maximum of 30 min before checking the status again.
+            print(f"Requests are running, waiting {wait_time_min:0.2f} min.")
+            sleep(60 * wait_time_min)
+            wait_time_min = min(30, 2 * wait_time_min)
+        else:
+            break
+    return df
 
-def send_request(request_entries: list[RequestEntry], dry_run: bool) -> None:
+def process_requests(request_entries: list[RequestEntry], cache_dir: Path, dry_run: bool) -> None:
+    df = pd.DataFrame()
+    request_hashes = {}
     if REQUEST_DATABASE_FILE.exists():
         df = pd.read_csv(REQUEST_DATABASE_FILE, index_col=0, dtype=str)
-    else:
-        df = pd.DataFrame()
+        request_hashes = set(df.get("request_hash", []))
 
-    for req_entry in request_entries:
-        req_hash = req_entry.get_sha256()
-        try:
-            duplicate = df["request_hash"].isin([req_hash]).any()
-        except KeyError:
-            duplicate = False
-        if not duplicate:
-            if not dry_run:
-                client = _get_cds_client_cached()
-                result = client.retrieve(req_entry.dataset, req_entry.request)
-                reply = result.reply
-            else:
-                print(
-                    f"Would have sent request for {req_entry.dataset}, {req_entry.request}"
-                )
-                # TODO: This causes issues when doing dry-run...
-                reply = {"state": "test_state", "request_id": "test_id"}
-            r_df = request_to_df(req_entry.request, reply, req_hash)
-            df = pd.concat([df, r_df])
-        else:
+    num_active_requests = 0
+    for entry in request_entries:
+        hash = entry.get_sha256()
+        if hash in request_hashes:
             print("Request already sent.")
-
-    # Save it.
+            continue
+        if dry_run:
+            print(f"Would sent request for {entry.dataset}, {entry.request}")
+            continue
+        if num_active_requests == MAX_ACTIVE_REQUESTS:
+            df = wait_and_download_requests(df, cache_dir, wait_for_all=False)
+        # send new request via CDS-API.
+        client = _get_cds_client_cached()
+        result = client.retrieve(entry.dataset, entry.request)
+        req_df = request_to_df(entry.request, result.reply, hash)
+        df = req_df if df.size == 0 else pd.concat([df, req_df], ignore_index=True)
+        num_active_requests += 1
+    # wait for remain requsts and save
+    df = wait_and_download_requests(df, cache_dir, wait_for_all=True)
     df = df.reset_index(drop=True)
     df.to_csv(REQUEST_DATABASE_FILE)
 
-
-def update_request(dry_run: bool) -> None:
-    if not REQUEST_DATABASE_FILE.exists():
-        print("Nothing to update.")
-        return
-    df = pd.read_csv(REQUEST_DATABASE_FILE, index_col=0, dtype=str)
-
-
+def update_request_state(df: pd.DataFrame) -> pd.DataFrame:
     print("Updating requests...")
+    rows_to_drop = []
     for request in df.itertuples():
-        if (
-            request.state != "completed"
-            and request.state != "downloaded"
-            and request.state != "deleted"
-        ):
+        state = request.state
+        idx = request.Index
+        if state not in ("completed", "downloaded", "deleted"):
             try:
-                if not dry_run:
-                    client = _get_cds_client_cached()
-                    result = client.client.get_remote(request.request_id)
-                    result.update()
-                    df.at[request.Index, "state"] = result.reply["state"]
+                client = _get_cds_client_cached()
+                result = client.client.get_remote(request.request_id)
+                result.update()
+                state = result.reply["state"]
             except HTTPError as err:
-                print(f"Request {request.Index} not found")
+                print(f"Request {idx} not found")
                 print(err)
-                df.at[request.Index, "state"] = "deleted"
+                state = "deleted"
+            df.at[idx, "state"] = state
+        if state == "deleted":
+            rows_to_drop.append(idx)
+    df.drop(rows_to_drop, inplace=True)
+    return df
 
-        if request.state == "deleted" or df.at[request.Index, "state"] == "deleted":
-            df.drop(request.Index, inplace=True)
-
-    df.to_csv(REQUEST_DATABASE_FILE)
-
-
-def download_request(
-    output_folder: Path, n_jobs: int = 5, dry_run: bool = False
-) -> None:
-    if not REQUEST_DATABASE_FILE.exists():
-        return
-    df = pd.read_csv(REQUEST_DATABASE_FILE, index_col=0, dtype=str)
-    print("Downloading completed requests...")
-    # Some parallel downloads.
-    download_helper_p = partial(
-        download_helper, output_folder=output_folder, dry_run=dry_run
-    )
-    with ThreadPool(processes=n_jobs) as p:
-        results = p.map(download_helper_p, df.itertuples())
-
-    # Write new states.
-    df['state'] = results
-    # Save them.
-    df.to_csv(REQUEST_DATABASE_FILE)
-
+def download_completed_requests(df: pd.DataFrame, output_folder: Path) -> pd.DataFrame:
+    new_states = []
+    for row in df.itertuples():
+        new_state = download_single_request(
+            state=row.state,
+            request_id=row.request_id,
+            request_hash=row.request_hash,
+            output_folder=output_folder,
+        )
+        new_states.append(new_state)
+    df['state'] = new_states
+    return df
 
 
 CDS_CLIENT = None
 
-def _get_cds_client_cached():
+def _get_cds_client_cached() -> cdsapi.Client:
     """Get the CDS client, will create a new one if it doesn't exist"""
     global CDS_CLIENT
 
@@ -130,33 +133,29 @@ def _get_cds_client_cached():
     CDS_CLIENT = cdsapi.Client(timeout=600, wait_until_complete=False, delete=False)
     return CDS_CLIENT
 
-def download_helper(
-    request: pd.core.frame.pandas,
+def download_single_request(
+    state: str,
+    request_id,
+    request_hash: str,
     output_folder: Path,
-    dry_run: bool = False,
 ) -> str:
-    if request.state == "completed":
-        try:
-            client = _get_cds_client_cached()
-            result = client.client.get_remote(request.request_id)
-            result.update()
-            filename = output_folder / request.request_hash
-            if not dry_run:
-                # Remove file to be downloaded if it exists, as to not to risk cdsapi resuming a
-                # corrupt file
-                if filename.exists():
-                    filename.unlink()
+    if state != "completed":
+        return state
 
-                result.download(filename)
-                return "downloaded"
-            else:
-                return request.state
-        except HTTPError as e:
-            print("Request not found")
-            print(e)
-            print(f'request.state: {request.state}')
-            # The request should be deleted
-            return "deleted"
-    else:
-        # No change to state.
-        return request.state
+    try:
+        client = _get_cds_client_cached()
+        result = client.client.get_remote(request_id)
+        result.update()
+
+        # Delete previous, possibly corrupt, file
+        filename = output_folder / request_hash
+        if filename.exists():
+            filename.unlink()
+        result.download(filename)
+        return "downloaded"
+    except HTTPError as e:
+        print("Request not found")
+        print(e)
+        print(f'request.state: {state}')
+        # The request should be deleted
+        return "deleted"
