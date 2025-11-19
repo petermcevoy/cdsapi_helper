@@ -8,6 +8,7 @@ from time import sleep
 from typing import List
 import datetime
 import string
+from queue import Queue
 
 import click
 import pandas as pd
@@ -177,13 +178,6 @@ def list_files(
     type=click.INT,
 )
 @click.option(
-    "--wait",
-    "wait",
-    is_flag=True,
-    type=click.BOOL,
-    help="Waiting for requests to be processed then download them.",
-)
-@click.option(
     "--output-dir",
     "output_dir",
     show_default=True,
@@ -195,7 +189,6 @@ def download(
     ctx,
     spec_paths: List[str],
     n_jobs: int,
-    wait: bool,
     dry_run: bool,
     output_dir: Path,
 ) -> None:
@@ -223,12 +216,9 @@ def download(
 
     send_request(remaining_requests, dry_run)
 
-    if not wait:
-        exit()
     # Check or wait for remaining_requests
     wait_retries = 0
-    check_request_again = True
-    while check_request_again:
+    while True:
         # First we try to download, likely in queue.
         download_request(cache_dir, n_jobs=n_jobs, dry_run=dry_run)
         # Then we update the request.
@@ -247,7 +237,6 @@ def download(
             or (df.state == "running").any()
             or (df.state == "accepted").any()
         ):
-
             # Wait before checking the status again.
             wait_minutes = min(30.0,(5 + (3.5 ** wait_retries)) / 60)
             click.echo(f"Requests are running, waiting {wait_minutes:0.2f} min.")
@@ -256,13 +245,13 @@ def download(
             if wait_retries < 6:
                 wait_retries += 1
         else:
-            check_request_again = False
+            break
 
     # Check that all requests are downloaded.
     for req_entry in request_entries:
         cache_file = cache_dir / req_entry.get_sha256()
         if not cache_file.exists():
-            click.echo("All requests are not downloaded. Try again when data is ready or use `--wait` flag to wait for requests to be ready.", err=True)
+            click.echo("All requests are not downloaded. Try again when data is ready.", err=True)
             click.echo(
                 click.style(
                     f"Missing expected cache file {cache_file} for request {req_entry.request}",
