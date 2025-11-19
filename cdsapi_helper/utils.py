@@ -172,7 +172,6 @@ def format_and_validate_request(
     request: dict[str,list[str|int|float|list[float|int]]|str|int],
 ) -> dict[str,list[str]|list[list[float|int]]|str]:
     """Format the fields of a request, adding defaults where necessary."""
-    assert 'area'  in request, "Field 'area' in request is required but missing."
     assert 'year'  in request, "Field 'year' in request is required but missing."
     assert 'month' in request, "Field 'month' in request is required but missing."
     unknown_keys = request.keys() - {
@@ -263,13 +262,14 @@ def format_and_validate_request(
         f"Time of all requests must be in the past but found requests up to {most_recent_date.date}"
     )
 
-    area = request['area']
-    assert isinstance(area, list) and len(area) >= 1, (
-        "Area must be specified as [min-latitude, min-longitude, max-latitude, max-longitude]."
-    )
-    if not isinstance(area[0], abc.Sized):
-        area = [area]
-    request['area'] = [Area(extent).extent for extent in area]
+    if 'area' in request:
+        area = request['area']
+        assert isinstance(area, list) and len(area) >= 1, (
+            "Area must be specified as [min-latitude, min-longitude, max-latitude, max-longitude]."
+        )
+        if not isinstance(area[0], abc.Sized):
+            area = [area]
+            request['area'] = [Area(extent).extent for extent in area]
     return request
 
 # https://github.com/schollii/sandals/blob/master/json_sem_hash.py
@@ -288,7 +288,7 @@ def sorted_dict_str(data: JsonType) -> StrTreeType:
         return str(data)
 
 
-def get_json_sem_hash(data: JsonTree, hasher: hashlib.HASH=hashlib.sha256) -> str:
+def get_json_sem_hash(data: JsonTree, hasher=hashlib.sha256) -> str:
     """Get SHA26 hash of json."""
     return hasher(bytes(repr(sorted_dict_str(data)), "UTF-8")).hexdigest()
 
