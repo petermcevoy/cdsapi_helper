@@ -1,7 +1,6 @@
 from functools import partial
-from multiprocessing.pool import ThreadPool
+from concurrent.futures import ThreadPoolExecutor, wait as wait_for_futures, Future
 from pathlib import Path
-from queue import Queue
 from time import sleep
 
 import cdsapi
@@ -35,63 +34,87 @@ assert (
 ), "RequestEntry.get_sha256() did not produce the expected hash!"
 # fmt: on
 
-def wait_and_download_requests(df: pd.DataFrame, cache_dir: Path, wait_for_all: bool) -> pd.DataFrame:
+def wait_and_download_requests(
+    df: pd.DataFrame,
+    cache_dir: Path,
+    thread_exec: ThreadPoolExecutor,
+    wait_for_all: bool,
+) -> list[Future]:
     if df.size == 0:
-        return df
+        return []
     wait_time_min = 1
+    futures = []
     while True:
-        df = update_request_state(df)
+        update_request_state(df)
         # Anything in the queue ready for download?
-        if (df.state == "completed").any():
-            df = download_completed_requests(df, cache_dir)
-            wait_time_min = 1
+        if (df["state"] == "completed").any():
+            new_f = download_completed_requests(df, cache_dir, thread_exec)
+            futures += new_f
+            wait_time_min = max(1, wait_time_min / 2)
             if not wait_for_all:
                 break
-        elif df.state.isin({"queued", "running", "accepted"}).any():
+        elif df["state"].isin({"queued", "running", "accepted"}).any():
             # Wait a maximum of 30 min before checking the status again.
             print(f"Requests are running, waiting {wait_time_min:0.2f} min.")
             sleep(60 * wait_time_min)
             wait_time_min = min(30, 2 * wait_time_min)
         else:
             break
-    return df
+    return futures
 
-def process_requests(request_entries: list[RequestEntry], cache_dir: Path, dry_run: bool) -> None:
+def process_requests(
+    request_entries: list[RequestEntry],
+    cache_dir: Path,
+    num_jobs: int,
+    dry_run: bool,
+) -> None:
+    assert num_jobs > 0, "Need at least one thread for downloads"
     df = pd.DataFrame()
     request_hashes = {}
     if REQUEST_DATABASE_FILE.exists():
         df = pd.read_csv(REQUEST_DATABASE_FILE, index_col=0, dtype=str)
         request_hashes = set(df.get("request_hash", []))
 
-    num_active_requests = 0
-    for entry in request_entries:
-        hash = entry.get_sha256()
-        if hash in request_hashes:
-            print("Request already sent.")
-            continue
-        if dry_run:
-            print(f"Would sent request for {entry.dataset}, {entry.request}")
-            continue
-        if num_active_requests == MAX_ACTIVE_REQUESTS:
-            df = wait_and_download_requests(df, cache_dir, wait_for_all=False)
-        # send new request via CDS-API.
-        client = _get_cds_client_cached()
-        result = client.retrieve(entry.dataset, entry.request)
-        req_df = request_to_df(entry.request, result.reply, hash)
-        df = req_df if df.size == 0 else pd.concat([df, req_df], ignore_index=True)
-        num_active_requests += 1
-    # wait for remain requsts and save
-    df = wait_and_download_requests(df, cache_dir, wait_for_all=True)
+    with ThreadPoolExecutor(max_workers=num_jobs) as thread_exec:
+        futures = []
+        num_active_requests = 0
+        for entry in request_entries:
+            hash = entry.get_sha256()
+            if hash in request_hashes:
+                continue
+            if dry_run:
+                print(f"Would sent request for {entry.dataset}, {entry.request}")
+                continue
+            if num_active_requests == MAX_ACTIVE_REQUESTS:
+                new_f = wait_and_download_requests(df, cache_dir, thread_exec, wait_for_all=False)
+                futures += new_f
+                num_active_requests -= len(new_f)
+            # send new request via CDS-API.
+            client = _get_cds_client_cached()
+            result = client.retrieve(entry.dataset, entry.request)
+            req_df = request_to_df(entry.request, result.reply, hash)
+            df = req_df if df.size == 0 else pd.concat([df, req_df], ignore_index=True)
+            num_active_requests += 1
+        # wait for remain requsts and save
+        futures += wait_and_download_requests(df, cache_dir, thread_exec, wait_for_all=True)
+        # wait for all downloads to complete
+        done, _ = wait_for_futures(futures)
+        assert num_active_requests - len(done) == 0, "Some requests are missing?"
+        # update downloaded states
+        if len(futures) > 0:
+            req_state_map = dict([f.result() for f in done])
+            mask = df["request_hash"].isin(req_state_map)
+            df.loc[mask, "state"] = df.loc[mask, "request_hash"].map(req_state_map)
     df = df.reset_index(drop=True)
     df.to_csv(REQUEST_DATABASE_FILE)
 
-def update_request_state(df: pd.DataFrame) -> pd.DataFrame:
+def update_request_state(df: pd.DataFrame) -> None:
     print("Updating requests...")
     rows_to_drop = []
     for request in df.itertuples():
         state = request.state
         idx = request.Index
-        if state not in ("completed", "downloaded", "deleted"):
+        if state not in ("completed", "in_download", "downloaded", "deleted"):
             try:
                 client = _get_cds_client_cached()
                 result = client.client.get_remote(request.request_id)
@@ -105,20 +128,29 @@ def update_request_state(df: pd.DataFrame) -> pd.DataFrame:
         if state == "deleted":
             rows_to_drop.append(idx)
     df.drop(rows_to_drop, inplace=True)
-    return df
 
-def download_completed_requests(df: pd.DataFrame, output_folder: Path) -> pd.DataFrame:
+def download_completed_requests(
+    df: pd.DataFrame,
+    output_folder: Path,
+    thread_exec: ThreadPoolExecutor,
+) -> list[Future]:
+    futures = []
     new_states = []
     for row in df.itertuples():
-        new_state = download_single_request(
-            state=row.state,
-            request_id=row.request_id,
-            request_hash=row.request_hash,
-            output_folder=output_folder,
-        )
-        new_states.append(new_state)
-    df['state'] = new_states
-    return df
+        state = row.state
+        if state == "completed":
+            row_future = thread_exec.submit(
+                download_single_request,
+                state=state,
+                request_id=row.request_id,
+                request_hash=row.request_hash,
+                output_folder=output_folder,
+            )
+            futures.append(row_future)
+            state = "in_download"
+        new_states.append(state)
+    df["state"] = new_states
+    return futures
 
 
 CDS_CLIENT = None
@@ -130,7 +162,7 @@ def _get_cds_client_cached() -> cdsapi.Client:
     if CDS_CLIENT is not None:
         return CDS_CLIENT
 
-    CDS_CLIENT = cdsapi.Client(timeout=600, wait_until_complete=False, delete=False)
+    CDS_CLIENT = cdsapi.Client(timeout=600, wait_until_complete=False, delete=False, quiet=True)
     return CDS_CLIENT
 
 def download_single_request(
@@ -138,24 +170,23 @@ def download_single_request(
     request_id,
     request_hash: str,
     output_folder: Path,
-) -> str:
-    if state != "completed":
-        return state
-
+) -> tuple[str, str]:
+    assert state == "completed", "Will only download completed requests"
+    print("Downloading", request_id)
     try:
         client = _get_cds_client_cached()
         result = client.client.get_remote(request_id)
         result.update()
-
         # Delete previous, possibly corrupt, file
         filename = output_folder / request_hash
         if filename.exists():
             filename.unlink()
         result.download(filename)
-        return "downloaded"
+        state = "downloaded"
     except HTTPError as e:
         print("Request not found")
         print(e)
         print(f'request.state: {state}')
         # The request should be deleted
-        return "deleted"
+        state = "deleted"
+    return request_hash, state
