@@ -4,14 +4,10 @@ import sys
 from copy import deepcopy
 from itertools import product
 from pathlib import Path
-from time import sleep
-from typing import List
 import datetime
 import string
-from queue import Queue
 
 import click
-import pandas as pd
 import tomli
 
 from .download import (
@@ -103,7 +99,7 @@ def download_cds(
 @click.pass_context
 def list_dangling(
     ctx,
-    spec_paths: List[str],
+    spec_paths: list[str],
 ) -> None:
     cache_dir = ctx.obj["cache_dir"]
     request_entries = generate_request_entries_from_specs(spec_paths)
@@ -120,7 +116,7 @@ def list_dangling(
 @click.pass_context
 def list_files(
     ctx,
-    spec_paths: List[str],
+    spec_paths: list[str],
 ) -> None:
     cache_dir = ctx.obj["cache_dir"]
 
@@ -169,6 +165,13 @@ def list_files(
     help="Dry run: no download and no symlinks.",
 )
 @click.option(
+    "--n-jobs",
+    "n_jobs",
+    show_default=True,
+    default=5,
+    type=click.INT,
+)
+@click.option(
     "--output-dir",
     "output_dir",
     show_default=True,
@@ -178,8 +181,9 @@ def list_files(
 )
 def download(
     ctx,
-    spec_paths: List[str],
+    spec_paths: list[str],
     dry_run: bool,
+    n_jobs: int,
     output_dir: Path,
 ) -> None:
     cache_dir = ctx.obj["cache_dir"]
@@ -204,7 +208,7 @@ def download(
     )
     click.echo(f"{len(remaining_requests)} local cache misses", err=True)
 
-    process_requests(remaining_requests, cache_dir, dry_run)
+    process_requests(remaining_requests, cache_dir, num_jobs=n_jobs, dry_run=dry_run)
 
     # Check that all requests are downloaded.
     for req_entry in request_entries:
