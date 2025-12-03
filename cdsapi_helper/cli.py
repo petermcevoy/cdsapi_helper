@@ -152,6 +152,180 @@ def list_files(
 
 
 @download_cds.command(
+    help="Migrate cache files to new hashes based on updated spec files (e.g., netcdf -> netcdf_legacy)."
+)
+@click.pass_context
+@click.argument("spec_paths", type=click.Path(exists=True), nargs=-1)
+@click.option(
+    "--output-dir",
+    "output_dir",
+    show_default=True,
+    default=Path("./output"),
+    type=Path,
+    help="Directory where symlinks are located according to filename_spec in spec files.",
+)
+@click.option(
+    "--dry-run",
+    "dry_run",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Dry run: show what would be migrated without actually renaming files.",
+)
+def migrate(
+    ctx,
+    spec_paths: list[str],
+    output_dir: Path,
+    dry_run: bool,
+) -> None:
+    """Migrate cache files from old hashes to new hashes based on updated spec files.
+
+    This is useful when the CDS API changes request parameters (e.g., 'netcdf' -> 'netcdf_legacy').
+    The command will:
+    1. Read the new spec files
+    2. For each expected output file, find the existing symlink
+    3. Follow the symlink to find the old cache file
+    4. Rename the cache file to the new hash
+    5. Update the symlink to point to the renamed file
+    6. Update the request database
+    """
+    cache_dir = ctx.obj["cache_dir"]
+
+    # Check that cache_dir and output_dir are in the same parent path
+    if output_dir.parent != cache_dir.parent:
+        raise ValueError('cache_dir and output_dir need to have the same parent directory')
+
+    # Generate request entries with NEW hashes (based on new spec files)
+    request_entries = generate_request_entries_from_specs(spec_paths)
+    click.echo(f"Generated {len(request_entries)} request(s) from spec files.", err=True)
+
+    # Track migration statistics
+    migrated_count = 0
+    skipped_no_symlink = 0
+    skipped_no_cache = 0
+    skipped_already_migrated = 0
+    errors = []
+
+    # Map to track if multiple requests map to same new hash (deduplication)
+    new_hash_to_old_cache = {}
+
+    for req_entry in request_entries:
+        # Build the expected output filename based on filename_spec
+        output_file = output_dir / build_filename(
+            req_entry.dataset, req_entry.request, req_entry.filename_spec
+        )
+
+        # Calculate the NEW hash (what the cache file should be named)
+        new_hash = req_entry.get_sha256()
+        new_cache_file = cache_dir / new_hash
+
+        # Check if symlink exists
+        if not output_file.exists():
+            skipped_no_symlink += 1
+            continue
+
+        # Check if it's actually a symlink
+        if not output_file.is_symlink():
+            errors.append(f"{output_file} exists but is not a symlink")
+            continue
+
+        # Resolve the symlink to find the old cache file
+        try:
+            # Get the relative path the symlink points to
+            link_target = os.readlink(output_file)
+            # Resolve to absolute path
+            old_cache_file = (output_file.parent / link_target).resolve()
+        except OSError as e:
+            errors.append(f"Could not resolve symlink {output_file}: {e}")
+            continue
+
+        # Check if old cache file exists
+        if not old_cache_file.exists():
+            skipped_no_cache += 1
+            click.echo(f"Warning: Symlink {output_file} points to non-existent file {old_cache_file}", err=True)
+            continue
+
+        # Check if already migrated (old and new are the same)
+        if old_cache_file.resolve() == new_cache_file.resolve():
+            skipped_already_migrated += 1
+            continue
+
+        # Check if we've already migrated this old cache file to this new hash
+        if new_hash in new_hash_to_old_cache:
+            # Multiple requests map to same new hash - verify they point to same old file
+            if new_hash_to_old_cache[new_hash] != old_cache_file:
+                errors.append(
+                    f"Conflict: Different old cache files ({old_cache_file} and "
+                    f"{new_hash_to_old_cache[new_hash]}) would be renamed to {new_cache_file}"
+                )
+                continue
+            else:
+                # Same old file, already renamed - just need to update symlink
+                if not dry_run:
+                    # Remove old symlink
+                    os.remove(output_file)
+                    # Create new symlink pointing to new cache file
+                    relative_path_to_cache_entry = os.path.relpath(new_cache_file, output_file.parent)
+                    os.symlink(relative_path_to_cache_entry, output_file)
+                    click.echo(f"Updated symlink: {output_file} -> {new_cache_file.name}", err=True)
+                else:
+                    click.echo(f"[DRY RUN] Would update symlink: {output_file} -> {new_cache_file.name}", err=True)
+                continue
+
+        # Check if new cache file already exists (collision)
+        if new_cache_file.resolve().exists() and new_cache_file.resolve() != old_cache_file.resolve():
+            errors.append(
+                f"Collision: New cache file {new_cache_file} already exists "
+                f"but old cache file is {old_cache_file}"
+            )
+            continue
+
+        # Perform the migration
+        if not dry_run:
+            # Rename the cache file
+            old_cache_file.rename(new_cache_file)
+
+            # Update the symlink
+            os.remove(output_file)
+            relative_path_to_cache_entry = os.path.relpath(new_cache_file, output_file.parent)
+            os.symlink(relative_path_to_cache_entry, output_file)
+
+            click.echo(
+                f"Migrated: {old_cache_file.name} -> {new_cache_file.name} "
+                f"(linked from {output_file})",
+                err=True
+            )
+        else:
+            click.echo(
+                f"[DRY RUN] Would migrate: {old_cache_file.name} -> {new_cache_file.name} "
+                f"(linked from {output_file})",
+                err=True
+            )
+
+        # Track this migration to handle duplicates
+        new_hash_to_old_cache[new_hash] = old_cache_file
+        migrated_count += 1
+
+    # Print summary
+    click.echo("\n=== Migration Summary ===", err=True)
+    click.echo(f"Migrated: {migrated_count}", err=True)
+    click.echo(f"Skipped (no symlink): {skipped_no_symlink}", err=True)
+    click.echo(f"Skipped (no cache file): {skipped_no_cache}", err=True)
+    click.echo(f"Skipped (already migrated): {skipped_already_migrated}", err=True)
+
+    if errors:
+        click.echo(f"\n{len(errors)} error(s) encountered:", err=True)
+        for error in errors:
+            click.echo(click.style(f"  ERROR: {error}", fg="red"), err=True)
+        sys.exit(1)
+
+    if dry_run:
+        click.echo("\nThis was a dry run. Use without --dry-run to perform actual migration.", err=True)
+
+    sys.exit(0)
+
+
+@download_cds.command(
     help="Download files and create output directories according to spec files."
 )
 @click.pass_context
