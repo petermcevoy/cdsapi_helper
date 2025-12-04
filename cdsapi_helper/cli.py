@@ -353,12 +353,21 @@ def migrate(
     type=Path,
     help="Directory from which to create files according to filename_spec in spec files.",
 )
+@click.option(
+    "--delete-request",
+    "delete_request",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Delete CDS request after successfully downloading the file.",
+)
 def download(
     ctx,
     spec_paths: list[str],
     dry_run: bool,
     n_jobs: int,
     output_dir: Path,
+    delete_request: bool,
 ) -> None:
     cache_dir = ctx.obj["cache_dir"]
 
@@ -382,7 +391,7 @@ def download(
     )
     click.echo(f"{len(remaining_requests)} local cache misses", err=True)
 
-    process_requests(remaining_requests, cache_dir, num_jobs=n_jobs, dry_run=dry_run)
+    process_requests(remaining_requests, cache_dir, num_jobs=n_jobs, dry_run=dry_run, delete_request=delete_request)
 
     # Check that all requests are downloaded.
     for req_entry in request_entries:

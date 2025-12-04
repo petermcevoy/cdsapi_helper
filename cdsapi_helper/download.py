@@ -39,6 +39,7 @@ def wait_and_download_requests(
     cache_dir: Path,
     thread_exec: ThreadPoolExecutor,
     wait_for_all: bool,
+    delete_request: bool = False,
 ) -> list[Future]:
     if df.size == 0:
         return []
@@ -48,7 +49,7 @@ def wait_and_download_requests(
         update_request_state(df)
         # Anything in the queue ready for download?
         if (df["state"] == "completed").any():
-            new_f = download_completed_requests(df, cache_dir, thread_exec)
+            new_f = download_completed_requests(df, cache_dir, thread_exec, delete_request)
             futures += new_f
             wait_time_min = max(1, wait_time_min / 2)
             if not wait_for_all:
@@ -67,6 +68,7 @@ def process_requests(
     cache_dir: Path,
     num_jobs: int,
     dry_run: bool,
+    delete_request: bool = False,
 ) -> None:
     assert num_jobs > 0, "Need at least one thread for downloads"
     df = pd.DataFrame()
@@ -86,7 +88,7 @@ def process_requests(
                 print(f"Would sent request for {entry.dataset}, {entry.request}")
                 continue
             if num_active_requests == MAX_ACTIVE_REQUESTS:
-                new_f = wait_and_download_requests(df, cache_dir, thread_exec, wait_for_all=False)
+                new_f = wait_and_download_requests(df, cache_dir, thread_exec, wait_for_all=False, delete_request=delete_request)
                 futures += new_f
                 num_active_requests -= len(new_f)
             # send new request via CDS-API.
@@ -96,10 +98,10 @@ def process_requests(
             df = req_df if df.size == 0 else pd.concat([df, req_df], ignore_index=True)
             num_active_requests += 1
         # wait for remain requsts and save
-        futures += wait_and_download_requests(df, cache_dir, thread_exec, wait_for_all=True)
+        futures += wait_and_download_requests(df, cache_dir, thread_exec, wait_for_all=True, delete_request=delete_request)
         # wait for all downloads to complete
         done, _ = wait_for_futures(futures)
-        assert num_active_requests - len(done) == 0, "Some requests are missing?"
+        assert num_active_requests - len(done) == 0, f"Some requests are missing? {num_active_requests}-{len(done)}==0?"
         # update downloaded states
         if len(futures) > 0:
             req_state_map = dict([f.result() for f in done])
@@ -133,6 +135,7 @@ def download_completed_requests(
     df: pd.DataFrame,
     output_folder: Path,
     thread_exec: ThreadPoolExecutor,
+    delete_request: bool = False,
 ) -> list[Future]:
     futures = []
     new_states = []
@@ -145,6 +148,7 @@ def download_completed_requests(
                 request_id=row.request_id,
                 request_hash=row.request_hash,
                 output_folder=output_folder,
+                delete_request=delete_request,
             )
             futures.append(row_future)
             state = "in_download"
@@ -170,6 +174,7 @@ def download_single_request(
     request_id,
     request_hash: str,
     output_folder: Path,
+    delete_request: bool = False,
 ) -> tuple[str, str]:
     assert state == "completed", "Will only download completed requests"
     print("Downloading", request_id)
@@ -183,6 +188,14 @@ def download_single_request(
             filename.unlink()
         result.download(filename)
         state = "downloaded"
+
+        # Delete the CDS request if requested
+        if delete_request:
+            try:
+                result.delete()
+                print(f"Deleted request {request_id}")
+            except Exception as e:
+                print(f"Warning: Failed to delete request {request_id}: {e}")
     except HTTPError as e:
         print("Request not found")
         print(e)
