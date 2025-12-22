@@ -227,7 +227,7 @@ def format_and_validate_request(
         format_str="{value:0{width}}",
         width_str=2,
         val=request.get('day'),
-        default=[f"{d:02}" for d in range(31)],
+        default=[f"{d:02}" for d in range(32)],
         min_val=1,
         max_val=31,
     )
@@ -250,17 +250,9 @@ def format_and_validate_request(
             formatted_time.append(f"{int(hour):02}:{int(minute):02}")
         request['time'] = formatted_time
 
-    most_recent_date = datetime(
-        year=int(request['year'][-1]),
-        month=int(request['month'][-1]),
-        day=int(request['day'][-1]),
-        hour=23,
-        minute=59,
-        second=59,
-    )
-    assert current_date > most_recent_date, (
-        f"Time of all requests must be in the past but found requests up to {most_recent_date.date}"
-    )
+
+    # TODO(Peter): Re-add check for only dates in past, when we have a way to handle "bad-dates",
+    # such as the last month being November in the spec, with default days being up to 31
 
     if 'area' in request:
         area = request['area']
